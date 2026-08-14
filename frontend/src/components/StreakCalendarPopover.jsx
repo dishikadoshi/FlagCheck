@@ -9,24 +9,24 @@ function toDateStr(d) {
   return d.toISOString().slice(0, 10);
 }
 
-export default function StreakCalendarPopover({ open, onClose, deviceId, currentStreak, longestStreak }) {
+export default function StreakCalendarPopover({ open, onClose, username, currentStreak, longestStreak }) {
   const [history, setHistory] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    if (!open || !deviceId) return;
+    if (!open || !username) return;
     let cancelled = false;
     setLoading(true);
     setErr("");
-    fetchHistory(deviceId, WEEKS * 7)
+    fetchHistory(username, WEEKS * 7)
       .then((d) => !cancelled && setHistory(d))
       .catch((e) => !cancelled && setErr(e.message || "Couldn't load streak history"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [open, deviceId]);
+  }, [open, username]);
 
   const grid = useMemo(() => {
     const byDate = new Map((history?.days || []).map((d) => [d.date, d.correct]));

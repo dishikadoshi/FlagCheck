@@ -1,42 +1,46 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Hero from "./components/Hero.jsx";
 import AmbientBackground from "./components/AmbientBackground.jsx";
+import TopNav from "./components/TopNav.jsx";
 import Onboarding from "./components/Onboarding.jsx";
 import ConversationCard from "./components/ConversationCard.jsx";
 import ResultStamp from "./components/ResultStamp.jsx";
 import TimerRing from "./components/TimerRing.jsx";
-import StreakBadge from "./components/StreakBadge.jsx";
-import StreakCalendarPopover from "./components/StreakCalendarPopover.jsx";
-import EditProfileModal from "./components/EditProfileModal.jsx";
 import {
-  getDeviceId,
+  getStoredUsername,
+  setStoredUsername,
   fetchPlayer,
   createPlayer,
   fetchTodayPuzzle,
   submitGuess,
-  updatePlayer,
 } from "./lib/api.js";
 
+// One shared, heavy-but-smooth transition for every top-level phase change
+// (onboarding -> playing -> result), so the app reads as one continuous
+// motion language rather than a grab-bag of effects.
+const PHASE_TRANSITION = { type: "spring", stiffness: 150, damping: 20, mass: 0.9 };
+const phaseMotion = {
+  initial: { opacity: 0, y: 22, scale: 0.965, filter: "blur(6px)" },
+  animate: { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" },
+  exit: { opacity: 0, y: -12, scale: 0.98, filter: "blur(3px)", transition: { duration: 0.32, ease: "easeIn" } },
+  transition: PHASE_TRANSITION,
+};
+
 export default function App() {
-  const [entered, setEntered] = useState(false);
   const [showHero, setShowHero] = useState(true);
-  const [phase, setPhase] = useState("loading"); // loading | onboarding | playing | result | error
+  const [entered, setEntered] = useState(false);
+  const [ready, setReady] = useState(false); // true once we know which phase to show — no separate "loading" screen is ever rendered
+  const [phase, setPhase] = useState("onboarding"); // onboarding | playing | result | error
   const [player, setPlayer] = useState(null);
   const [puzzle, setPuzzle] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [editBusy, setEditBusy] = useState(false);
-  const [editError, setEditError] = useState("");
 
-  const deviceId = getDeviceId();
-
-  const loadPuzzleAndMaybeResult = useCallback(async () => {
-    const p = await fetchTodayPuzzle(deviceId);
+  const loadPuzzleAndMaybeResult = useCallback(async (username) => {
+    const p = await fetchTodayPuzzle(username);
     setPuzzle(p);
     if (p.alreadyPlayed) {
       setResult({
@@ -49,45 +53,58 @@ export default function App() {
     } else {
       setPhase("playing");
     }
-  }, [deviceId]);
+  }, []);
 
-  useEffect(() => {
-    if (!entered) return;
-    (async () => {
-      try {
-        const existing = await fetchPlayer(deviceId).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
-        if (!existing) {
-          setPhase("onboarding");
-          return;
-        }
-        setPlayer(existing);
-        await loadPuzzleAndMaybeResult();
-      } catch (e) {
-        setError(e.message || "Something went wrong reaching the server.");
-        setPhase("error");
+  // Fired the instant the flag is tapped, in parallel with the door-opening
+  // animation (~1.3s). Whichever profile this browser last used (if any) is
+  // resolved *while the doors are swinging*, so by the time they're fully
+  // open the correct screen is already sitting there waiting — no spinner,
+  // no separate loading screen, ever.
+  async function resolveEntry() {
+    setError("");
+    try {
+      const stored = getStoredUsername();
+      if (!stored) {
+        setPhase("onboarding");
+        setReady(true);
+        return;
       }
-    })();
-  }, [entered, deviceId, loadPuzzleAndMaybeResult]);
+      const existing = await fetchPlayer(stored).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+      if (!existing) {
+        setPhase("onboarding");
+      } else {
+        setPlayer(existing);
+        await loadPuzzleAndMaybeResult(existing.username);
+      }
+      setReady(true);
+    } catch (e) {
+      setError(e.message || "Something went wrong reaching the server.");
+      setPhase("error");
+      setReady(true);
+    }
+  }
 
   async function handleOnboard({ username, gender }) {
     setBusy(true);
     setError("");
     try {
-      const p = await createPlayer({ deviceId, username, gender });
+      const p = await createPlayer({ username, gender });
       setPlayer(p);
-      await loadPuzzleAndMaybeResult();
+      setStoredUsername(p.username);
+      await loadPuzzleAndMaybeResult(p.username);
+      setReady(true);
     } catch (e) {
-      setError(e.message || "Couldn't create your profile — try again.");
+      setError(e.message || "Couldn't start your profile — try again.");
     } finally {
       setBusy(false);
     }
   }
 
   async function handleGuess(answer) {
-    if (busy) return;
+    if (busy || !player) return;
     setBusy(true);
     try {
-      const r = await submitGuess({ deviceId, answer });
+      const r = await submitGuess({ username: player.username, answer });
       setPlayer(r);
       setResult({
         correct: r.correct,
@@ -118,188 +135,127 @@ export default function App() {
     // lock in a forced (losing) submission once the 90s window server-side has passed
     handleGuess("red");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy]);
+  }, [busy, player]);
 
-  async function handleSaveProfile({ username, gender }) {
-    setEditBusy(true);
-    setEditError("");
-    try {
-      const p = await updatePlayer(deviceId, { username, gender });
-      setPlayer(p);
-      setEditOpen(false);
-    } catch (e) {
-      setEditError(e.message || "Couldn't save changes — try again.");
-    } finally {
-      setEditBusy(false);
-    }
+  // "Switch reader" — the home icon next to the streak badge. Instantly
+  // shows the username form again (no fetch, nothing to wait on, since the
+  // app is already open). Typing the same username returns that same
+  // player's result/streak; typing a different one starts (or resumes) a
+  // completely separate player — each has their own streak, stored
+  // server-side by username, not by device.
+  function handleGoHome() {
+    setCalendarOpen(false);
+    setResult(null);
+    setPuzzle(null);
+    setError("");
+    setPhase("onboarding");
   }
 
+  const showControls = ready && phase !== "onboarding" && phase !== "error" && !!player;
+
   return (
-    <div className="min-h-screen relative">
+    <div className="relative h-screen w-full overflow-hidden">
       <AmbientBackground />
       <AnimatePresence>
         {showHero && (
-          <Hero onEnter={() => setEntered(true)} onExitComplete={() => setShowHero(false)} />
+          <Hero
+            onEnter={() => {
+              setEntered(true);
+              resolveEntry();
+            }}
+            onExitComplete={() => setShowHero(false)}
+          />
         )}
       </AnimatePresence>
 
       {entered && (
-        <div className="relative z-10 min-h-screen flex flex-col items-center px-4 py-8 sm:py-12">
-          <motion.header
-            initial={{ opacity: 0, y: -14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="w-full max-w-md flex items-center justify-between mb-6 sm:mb-8"
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-2xl">🚩</span>
-              <span className="font-display font-bold text-xl text-ink-800">Flag Check</span>
-            </div>
-
-            {player && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setEditOpen(true)}
-                  aria-label="Edit profile"
-                  title="Edit profile"
-                  className="flex h-8 w-8 items-center justify-center rounded-full border border-blush-200 bg-white/80 text-ink-500 shadow-sm backdrop-blur transition hover:border-blush-300 hover:text-blush-600"
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                    <path
-                      d="M11.3 2.3a1.4 1.4 0 0 1 2 2L5.8 12.6l-2.7.7.7-2.7 7.5-8.3Z"
-                      stroke="currentColor"
-                      strokeWidth="1.2"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-
-                <div className="relative">
-                  <StreakBadge streak={player.streak} open={calendarOpen} onClick={() => setCalendarOpen((v) => !v)} />
-                  <StreakCalendarPopover
-                    open={calendarOpen}
-                    onClose={() => setCalendarOpen(false)}
-                    deviceId={deviceId}
-                    currentStreak={player.streak}
-                    longestStreak={player.longestStreak}
-                  />
-                </div>
-              </div>
-            )}
-          </motion.header>
-
-          <div className="w-full max-w-md">
-            <AnimatePresence mode="wait">
-              {phase === "loading" && (
-                <motion.div
-                  key="loading"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="flex flex-col items-center justify-center py-24 gap-4"
-                >
-                  <motion.span
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
-                    className="h-9 w-9 rounded-full border-[3px] border-blush-200 border-t-blush-500"
-                  />
-                  <p className="text-blush-500 text-sm">loading today's read…</p>
-                </motion.div>
-              )}
-
-              {phase === "onboarding" && (
-                <motion.div key="onboarding" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, scale: 0.95 }}>
-                  <Onboarding onSubmit={handleOnboard} submitting={busy} error={error} />
-                </motion.div>
-              )}
-
-              {phase === "playing" && puzzle && (
-                <motion.div
-                  key="playing"
-                  initial={{ opacity: 0, y: 24 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.97 }}
-                  transition={{ type: "spring", stiffness: 200, damping: 22 }}
-                  className="bg-white/90 backdrop-blur-xl border border-blush-100 rounded-[28px] shadow-card-lg p-5 sm:p-7"
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-widest text-blush-400">today's conversation</p>
-                      <h2 className="font-display text-xl font-semibold text-ink-800">{puzzle.title}</h2>
-                    </div>
-                    <TimerRing
-                      startedAt={puzzle.startedAt || Date.now()}
-                      timeLimitMs={puzzle.timeLimitMs}
-                      onExpire={handleExpire}
-                      paused={busy}
-                    />
-                  </div>
-                  <ConversationCard
-                    puzzle={puzzle}
-                    askingAbout={puzzle.askingAbout}
-                    onGuess={handleGuess}
-                    guessing={busy}
-                    disabled={busy}
-                  />
-                </motion.div>
-              )}
-
-              {phase === "result" && result && (
-                <motion.div
-                  key="result"
-                  initial={{ opacity: 0, scale: 0.94 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ type: "spring", stiffness: 200, damping: 22 }}
-                  className="bg-white/90 backdrop-blur-xl border border-blush-100 rounded-[28px] shadow-card-lg p-6 sm:p-8"
-                >
-                  <ResultStamp result={result} askingAbout={puzzle?.askingAbout} puzzleTitle={puzzle?.title} />
-                  {player && (
-                    <div className="flex items-center justify-center gap-6 mt-6 pt-5 border-t border-blush-100">
-                      <div className="text-center">
-                        <p className="font-display text-2xl font-bold text-ink-800">{player.streak}</p>
-                        <p className="text-[11px] uppercase tracking-wide text-blush-400">current streak</p>
-                      </div>
-                      <div className="text-center">
-                        <p className="font-display text-2xl font-bold text-ink-800">{player.longestStreak}</p>
-                        <p className="text-[11px] uppercase tracking-wide text-blush-400">best streak</p>
-                      </div>
-                    </div>
-                  )}
-                </motion.div>
-              )}
-
-              {phase === "error" && (
-                <motion.div
-                  key="error"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="bg-white/90 border border-red-200 rounded-[28px] shadow-card-lg p-7 text-center"
-                >
-                  <p className="text-red-600 font-semibold mb-2">Couldn't reach the server</p>
-                  <p className="text-ink-500 text-sm">{error}</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {player && phase !== "loading" && (
-            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }} className="text-blush-400 text-xs mt-6">
-              reading as <span className="font-semibold text-blush-500">{player.username}</span>
-            </motion.p>
-          )}
-
-          <EditProfileModal
-            open={editOpen}
-            onClose={() => {
-              setEditOpen(false);
-              setEditError("");
-            }}
+        <div className="relative z-10 flex h-full flex-col">
+          <TopNav
             player={player}
-            onSave={handleSaveProfile}
-            saving={editBusy}
-            error={editError}
+            showControls={showControls}
+            onHome={handleGoHome}
+            calendarOpen={calendarOpen}
+            onToggleCalendar={() => setCalendarOpen((v) => !v)}
+            onCloseCalendar={() => setCalendarOpen(false)}
           />
+
+          <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 pb-6">
+            <div className="w-full max-w-md">
+              <AnimatePresence mode="wait">
+                {ready && phase === "onboarding" && (
+                  <motion.div key="onboarding" {...phaseMotion}>
+                    <Onboarding
+                      onSubmit={handleOnboard}
+                      submitting={busy}
+                      error={error}
+                      initial={player ? { username: player.username, gender: player.gender } : undefined}
+                    />
+                  </motion.div>
+                )}
+
+                {ready && phase === "playing" && puzzle && (
+                  <motion.div
+                    key="playing"
+                    {...phaseMotion}
+                    className="bg-white/90 backdrop-blur-xl border border-blush-100 rounded-[28px] shadow-card-lg p-5 sm:p-7"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-widest text-blush-400">today's conversation</p>
+                        <h2 className="font-display text-xl font-semibold text-ink-800">{puzzle.title}</h2>
+                      </div>
+                      <TimerRing
+                        startedAt={puzzle.startedAt || Date.now()}
+                        timeLimitMs={puzzle.timeLimitMs}
+                        onExpire={handleExpire}
+                        paused={busy}
+                      />
+                    </div>
+                    <ConversationCard
+                      puzzle={puzzle}
+                      askingAbout={puzzle.askingAbout}
+                      onGuess={handleGuess}
+                      guessing={busy}
+                      disabled={busy}
+                    />
+                  </motion.div>
+                )}
+
+                {ready && phase === "result" && result && (
+                  <motion.div
+                    key="result"
+                    {...phaseMotion}
+                    className="bg-white/85 backdrop-blur-xl border border-blush-200 rounded-[28px] shadow-soft p-6 sm:p-8"
+                  >
+                    <ResultStamp result={result} askingAbout={puzzle?.askingAbout} puzzleTitle={puzzle?.title} />
+                    {player && (
+                      <div className="flex items-center justify-center gap-6 mt-6 pt-5 border-t border-blush-100">
+                        <div className="text-center">
+                          <p className="font-display text-2xl font-bold text-blush-800">{player.streak}</p>
+                          <p className="text-[11px] uppercase tracking-wide text-blush-400">current streak</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="font-display text-2xl font-bold text-blush-800">{player.longestStreak}</p>
+                          <p className="text-[11px] uppercase tracking-wide text-blush-400">best streak</p>
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+
+                {ready && phase === "error" && (
+                  <motion.div
+                    key="error"
+                    {...phaseMotion}
+                    className="bg-white/90 border border-red-200 rounded-[28px] shadow-card-lg p-7 text-center"
+                  >
+                    <p className="text-red-600 font-semibold mb-2">Couldn't reach the server</p>
+                    <p className="text-blush-600 text-sm">{error}</p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </main>
         </div>
       )}
     </div>

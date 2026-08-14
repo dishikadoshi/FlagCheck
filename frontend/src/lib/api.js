@@ -1,11 +1,22 @@
 export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8787";
 
-const DEVICE_KEY = "flagcheck_device_id";
+const LAST_USERNAME_KEY = "flagcheck_last_username";
+const DEVICE_KEY = "flagcheck_device_id"; // sent to the server only as a breadcrumb, never used for identity
+
+export function getStoredUsername() {
+  return localStorage.getItem(LAST_USERNAME_KEY) || "";
+}
+export function setStoredUsername(username) {
+  if (username) localStorage.setItem(LAST_USERNAME_KEY, username);
+}
+export function clearStoredUsername() {
+  localStorage.removeItem(LAST_USERNAME_KEY);
+}
 
 export function getDeviceId() {
   let id = localStorage.getItem(DEVICE_KEY);
   if (!id) {
-    id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     localStorage.setItem(DEVICE_KEY, id);
   }
   return id;
@@ -26,35 +37,30 @@ async function request(path, options = {}) {
   return data;
 }
 
-export function fetchPlayer(deviceId) {
-  return request(`/api/player/${deviceId}`);
+export function fetchPlayer(username) {
+  return request(`/api/player/${encodeURIComponent(username)}`);
 }
 
-export function createPlayer({ deviceId, username, gender }) {
+// Same username (case-insensitive) always resolves to the same player and
+// their existing streak; a different username is always a different player.
+export function createPlayer({ username, gender }) {
   return request(`/api/player`, {
     method: "POST",
-    body: JSON.stringify({ deviceId, username, gender }),
+    body: JSON.stringify({ username, gender, deviceId: getDeviceId() }),
   });
 }
 
-export function fetchTodayPuzzle(deviceId) {
-  return request(`/api/puzzle/today?deviceId=${encodeURIComponent(deviceId)}`);
+export function fetchTodayPuzzle(username) {
+  return request(`/api/puzzle/today?username=${encodeURIComponent(username)}`);
 }
 
-export function submitGuess({ deviceId, answer }) {
+export function submitGuess({ username, answer }) {
   return request(`/api/guess`, {
     method: "POST",
-    body: JSON.stringify({ deviceId, answer }),
+    body: JSON.stringify({ username, answer }),
   });
 }
 
-export function updatePlayer(deviceId, { username, gender }) {
-  return request(`/api/player/${deviceId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ username, gender }),
-  });
-}
-
-export function fetchHistory(deviceId, days = 35) {
-  return request(`/api/player/${deviceId}/history?days=${days}`);
+export function fetchHistory(username, days = 35) {
+  return request(`/api/player/${encodeURIComponent(username)}/history?days=${days}`);
 }

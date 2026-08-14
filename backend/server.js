@@ -41,13 +41,15 @@ function dayIndex() {
   const epoch = new Date("2024-01-01T00:00:00Z").getTime();
   return Math.floor((Date.now() - epoch) / 86400000);
 }
+function usernameKey(u) {
+  return String(u || "").trim().toLowerCase();
+}
 
 function publicPlayer(p, resultToday) {
   if (!p) return null;
   const today = todayStr();
   const playedToday = p.last_played_date === today;
   return {
-    deviceId: p.device_id,
     username: p.username,
     gender: p.gender,
     streak: p.current_streak,
@@ -58,8 +60,15 @@ function publicPlayer(p, resultToday) {
   };
 }
 
-async function getPlayerByDeviceId(deviceId) {
-  const { data, error } = await supabase.from("players").select("*").eq("device_id", deviceId).maybeSingle();
+// Players are looked up by username, case-insensitively, via the generated
+// `username_key` column (see schema.sql). This is what lets two different
+// people share a browser/device and still have completely separate streaks:
+// whoever types "priya" always gets priya's row, whoever types "sam" always
+// gets sam's, regardless of which device either of them is on.
+async function getPlayerByUsername(username) {
+  const key = usernameKey(username);
+  if (!key) return null;
+  const { data, error } = await supabase.from("players").select("*").eq("username_key", key).maybeSingle();
   if (error) throw error;
   return data;
 }
@@ -132,26 +141,40 @@ function resultPayload(puzzle, attempt) {
 
 // ---- routes ----
 
-// Create or fetch a player by device id. If the player doesn't exist yet, username+gender are required.
+// Create or fetch a player by username. If no player exists for that
+// username yet, gender is required and a new row is created. If a player
+// with that username (case-insensitively) already exists, their existing
+// row is returned as-is -- this is the "same username = same person, same
+// streak" rule; a different username is always a different player.
 app.post("/api/player", async (req, res) => {
   try {
-    const { deviceId, username, gender } = req.body || {};
-    if (!deviceId) return res.status(400).json({ error: "deviceId is required" });
+    const { username, gender, deviceId } = req.body || {};
+    const trimmed = String(username || "").trim();
+    if (trimmed.length < 2) return res.status(400).json({ error: "username must be at least 2 characters" });
 
-    let player = await getPlayerByDeviceId(deviceId);
+    let player = await getPlayerByUsername(trimmed);
     if (!player) {
-      if (!username || !gender || !["male", "female"].includes(gender)) {
-        return res
-          .status(400)
-          .json({ error: "username and gender ('male' | 'female') are required for a new player" });
+      if (!gender || !["male", "female"].includes(gender)) {
+        return res.status(400).json({ error: "gender ('male' | 'female') is required for a new player" });
       }
       const { data, error } = await supabase
         .from("players")
-        .insert({ device_id: deviceId, username: String(username).slice(0, 24), gender })
+        .insert({ username: trimmed.slice(0, 24), gender, device_id: deviceId || null })
         .select()
         .single();
-      if (error) throw error;
-      player = data;
+      if (error) {
+        if (error.code === "23505") {
+          // lost a race to a duplicate create -- just fetch what won
+          player = await getPlayerByUsername(trimmed);
+        } else {
+          throw error;
+        }
+      } else {
+        player = data;
+      }
+    } else if (deviceId) {
+      // best-effort breadcrumb of last device used, not used for identity
+      await supabase.from("players").update({ device_id: deviceId }).eq("id", player.id);
     }
     res.json(publicPlayer(player));
   } catch (e) {
@@ -160,46 +183,11 @@ app.post("/api/player", async (req, res) => {
   }
 });
 
-app.get("/api/player/:deviceId", async (req, res) => {
+app.get("/api/player/:username", async (req, res) => {
   try {
-    const player = await getPlayerByDeviceId(req.params.deviceId);
+    const player = await getPlayerByUsername(req.params.username);
     if (!player) return res.status(404).json({ error: "player not found" });
     res.json(publicPlayer(player));
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "server error" });
-  }
-});
-
-// Edit an existing player's profile (username and/or gender). Lets the
-// frontend offer a "not you? edit profile" affordance instead of being
-// permanently locked into whatever was typed during onboarding.
-app.patch("/api/player/:deviceId", async (req, res) => {
-  try {
-    const { username, gender } = req.body || {};
-    const player = await getPlayerByDeviceId(req.params.deviceId);
-    if (!player) return res.status(404).json({ error: "player not found" });
-
-    const patch = {};
-    if (username !== undefined) {
-      const trimmed = String(username).trim();
-      if (trimmed.length < 2) return res.status(400).json({ error: "username must be at least 2 characters" });
-      patch.username = trimmed.slice(0, 24);
-    }
-    if (gender !== undefined) {
-      if (!["male", "female"].includes(gender)) return res.status(400).json({ error: "invalid gender" });
-      patch.gender = gender;
-    }
-    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "nothing to update" });
-
-    const { data, error } = await supabase
-      .from("players")
-      .update(patch)
-      .eq("device_id", req.params.deviceId)
-      .select()
-      .single();
-    if (error) throw error;
-    res.json(publicPlayer(data));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "server error" });
@@ -211,9 +199,9 @@ app.patch("/api/player/:deviceId", async (req, res) => {
 // anchors the 90-second limit so the timer can't just be restarted client-side.
 app.get("/api/puzzle/today", async (req, res) => {
   try {
-    const { deviceId } = req.query;
-    const player = deviceId ? await getPlayerByDeviceId(deviceId) : null;
-    if (deviceId && !player) return res.status(404).json({ error: "player not found" });
+    const { username } = req.query;
+    const player = username ? await getPlayerByUsername(username) : null;
+    if (username && !player) return res.status(404).json({ error: "player not found" });
 
     const today = todayStr();
     const puzzle = await getOrAssignDailyPuzzle(today);
@@ -263,11 +251,11 @@ app.get("/api/puzzle/today", async (req, res) => {
 // itself fails (23505) on a second attempt, independent of any app logic.
 app.post("/api/guess", async (req, res) => {
   try {
-    const { deviceId, answer } = req.body || {};
-    if (!deviceId || !["red", "green"].includes(answer)) {
-      return res.status(400).json({ error: "deviceId and answer ('red' | 'green') are required" });
+    const { username, answer } = req.body || {};
+    if (!username || !["red", "green"].includes(answer)) {
+      return res.status(400).json({ error: "username and answer ('red' | 'green') are required" });
     }
-    const player = await getPlayerByDeviceId(deviceId);
+    const player = await getPlayerByUsername(username);
     if (!player) return res.status(404).json({ error: "player not found" });
 
     const today = todayStr();
@@ -344,10 +332,10 @@ app.post("/api/guess", async (req, res) => {
 
 // Recent play history for the streak calendar popup -- one entry per day played,
 // sourced directly from `attempts` (real history, not just last-played-date).
-app.get("/api/player/:deviceId/history", async (req, res) => {
+app.get("/api/player/:username/history", async (req, res) => {
   try {
     const days = Math.min(90, Math.max(7, parseInt(req.query.days, 10) || 35));
-    const player = await getPlayerByDeviceId(req.params.deviceId);
+    const player = await getPlayerByUsername(req.params.username);
     if (!player) return res.status(404).json({ error: "player not found" });
 
     const since = new Date();

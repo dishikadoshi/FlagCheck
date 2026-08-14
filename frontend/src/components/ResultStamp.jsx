@@ -20,8 +20,8 @@ export default function ResultStamp({ result, askingAbout, puzzleTitle }) {
         initial={{ scale: 3, opacity: 0, rotate: isRed ? -25 : 20 }}
         animate={{ scale: 1, opacity: 1, rotate: isRed ? -8 : 6 }}
         transition={{ type: "spring", stiffness: 260, damping: 14, delay: 0.1 }}
-        className={`inline-flex flex-col items-center gap-1 rounded-2xl border-4 px-8 py-5 mb-5 shadow-card ${
-          isRed ? "border-blush-700 text-blush-700 bg-blush-50/60" : "border-emerald-700 text-emerald-700 bg-emerald-50/60"
+        className={`inline-flex flex-col items-center gap-1 rounded-2xl border-4 px-8 py-5 mb-5 ${
+          isRed ? "border-red-600 text-red-700" : "border-emerald-600 text-emerald-700"
         }`}
         style={{ transform: `rotate(${isRed ? -6 : 4}deg)` }}
       >
@@ -38,15 +38,15 @@ export default function ResultStamp({ result, askingAbout, puzzleTitle }) {
       >
         <p
           className={`font-display text-xl font-semibold mb-2 ${
-            timedOut ? "text-blush-600" : correct ? "text-emerald-700" : "text-blush-700"
+            timedOut ? "text-blush-600" : correct ? "text-emerald-700" : "text-red-700"
           }`}
         >
           {timedOut ? "Time's up — no read, no streak" : correct ? "You read it right." : "Not quite."}
         </p>
-        <p className="text-ink-600 text-sm mb-1">
+        <p className="text-blush-700 text-sm mb-1">
           "{puzzleTitle}" — {subject} side was the {isRed ? "red" : "green"} flag.
         </p>
-        <p className="text-ink-700/90 text-[15px] leading-relaxed max-w-sm mx-auto bg-blush-50 border border-blush-100 rounded-2xl px-4 py-3 mt-3">
+        <p className="text-blush-800/90 text-[15px] leading-relaxed max-w-sm mx-auto bg-blush-50 border border-blush-100 rounded-2xl px-4 py-3 mt-3">
           {explanation}
         </p>
         <p className="text-blush-400 text-xs mt-5 tracking-wide">

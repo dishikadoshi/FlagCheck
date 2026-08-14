@@ -6,21 +6,27 @@ create extension if not exists "pgcrypto";
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- players
--- One row per device. No auth — deviceId is a random UUID minted client-side
--- and stored in localStorage, same trust model as before, now with a real
--- primary key and a unique constraint instead of a JSON object key.
+-- One row per USERNAME, not per device. Multiple people can play on the same
+-- browser/device (e.g. a shared phone) — they're distinguished by the name
+-- they type in, case-insensitively, via the generated `username_key` column
+-- and its unique index below. `device_id` is kept only as an optional,
+-- non-unique breadcrumb of the last device a profile was used from; it plays
+-- no role in identifying a player.
 -- ─────────────────────────────────────────────────────────────────────────
 create table if not exists players (
   id                uuid primary key default gen_random_uuid(),
-  device_id         text unique not null,
   username          text not null,
+  username_key      text generated always as (lower(trim(username))) stored,
   gender            text not null check (gender in ('male', 'female')),
+  device_id         text,
   current_streak    integer not null default 0,
   longest_streak    integer not null default 0,
   last_played_date  date,
   puzzle_state      jsonb not null default '{}'::jsonb, -- { [date]: { startedAt: epochMs } } — anchors the 90s timer server-side
   created_at        timestamptz not null default now()
 );
+
+create unique index if not exists players_username_key_idx on players (username_key);
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- skills
