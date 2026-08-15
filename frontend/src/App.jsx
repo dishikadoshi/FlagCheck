@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Hero from "./components/Hero.jsx";
 import AmbientBackground from "./components/AmbientBackground.jsx";
@@ -19,14 +19,6 @@ import {
 // One shared, light transition for every top-level phase change
 // (onboarding -> playing -> result), so the app reads as one continuous
 // motion language rather than a grab-bag of effects.
-//
-// Deliberately transform/opacity-only: an earlier version animated a CSS
-// `filter: blur()` here on top of a card that already has `backdrop-blur-xl`
-// applied to it. Animating blur is expensive to composite (it can't run on
-// the GPU compositor the way transform/opacity can) and, stacked on another
-// blur, was heavy enough to visibly stall the main thread for a beat on
-// every phase change -- exactly the "loads and pauses" glitch on both
-// Start Reading and tapping a flag, since both go through this transition.
 const PHASE_TRANSITION = { duration: 0.22, ease: "easeOut" };
 const phaseMotion = {
   initial: { opacity: 0, y: 14, scale: 0.985 },
@@ -38,7 +30,7 @@ const phaseMotion = {
 export default function App() {
   const [showHero, setShowHero] = useState(true);
   const [entered, setEntered] = useState(false);
-  const [ready, setReady] = useState(false); // true once we know which phase to show — no separate "loading" screen is ever rendered
+  const [ready, setReady] = useState(false);
   const [phase, setPhase] = useState("onboarding"); // onboarding | playing | result | error
   const [player, setPlayer] = useState(null);
   const [puzzle, setPuzzle] = useState(null);
@@ -48,9 +40,62 @@ export default function App() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [history, setHistory] = useState(null);
 
+  // ---- browser back/forward support -------------------------------------
+  // There's no router in this app (no react-router-dom in package.json) --
+  // every phase change is local useState, so the browser's history stack
+  // never grows past the initial page load. That's why one "Back" press
+  // exits the site entirely: there's nothing in-app for it to step back to.
+  //
+  // Fix: push a real history entry on every meaningful phase change, and
+  // restore state from `popstate` when the user navigates with Back/Forward.
+  // `fromPopStateRef` guards against re-pushing an entry while we're in the
+  // middle of *responding* to a popstate event (which would corrupt the
+  // stack -- every popstate-driven update must be a pure state restore,
+  // never a new push).
+  const fromPopStateRef = useRef(false);
+
+  const pushHistory = useCallback((state) => {
+    if (fromPopStateRef.current) return;
+    window.history.pushState(state, "");
+  }, []);
+
+  useEffect(() => {
+    // Seed a base entry so the very first "Back" press lands on a known
+    // in-app state instead of immediately leaving.
+    window.history.replaceState({ entered: false, phase: "onboarding" }, "");
+
+    function onPopState(e) {
+      const s = e.state;
+      fromPopStateRef.current = true;
+      if (!s || s.entered === false) {
+        setEntered(false);
+        setShowHero(true);
+        setReady(false);
+        setPhase("onboarding");
+      } else {
+        setEntered(true);
+        setShowHero(false);
+        setReady(true);
+        if (s.phase) setPhase(s.phase);
+        if (s.phase === "onboarding") {
+          // stepping back to onboarding also means "no active player" in the UI
+          setResult(null);
+        }
+      }
+      // release the guard on the next tick, after React has applied the
+      // state above -- otherwise a *user-driven* push right after a
+      // popstate could get silently dropped too.
+      setTimeout(() => {
+        fromPopStateRef.current = false;
+      }, 0);
+    }
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   // Fetched proactively (never on-demand) so the streak calendar popover has
-  // no loading state to show — by the time anyone taps the streak badge, the
-  // data has already been sitting in memory for a while.
+  // no loading state to show.
   const refreshHistory = useCallback(async (username) => {
     try {
       const h = await fetchHistory(username, 35);
@@ -70,16 +115,13 @@ export default function App() {
         explanation: p.resultToday.explanation,
       });
       setPhase("result");
+      pushHistory({ entered: true, phase: "result" });
     } else {
       setPhase("playing");
+      pushHistory({ entered: true, phase: "playing" });
     }
-  }, []);
+  }, [pushHistory]);
 
-  // Fired the instant the flag is tapped, in parallel with the door-opening
-  // animation (~1.3s). Whichever profile this browser last used (if any) is
-  // resolved *while the doors are swinging*, so by the time they're fully
-  // open the correct screen is already sitting there waiting — no spinner,
-  // no separate loading screen, ever.
   async function resolveEntry() {
     setError("");
     try {
@@ -89,16 +131,11 @@ export default function App() {
         setReady(true);
         return;
       }
-      // One combined request instead of fetchPlayer() + fetchTodayPuzzle()
-      // as two sequential round trips.
       const entry = await enterAsPlayer(stored).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
       if (!entry) {
         setPhase("onboarding");
       } else {
         setPlayer(entry.player);
-        // History is only for the streak-calendar popover, not needed to
-        // show the puzzle/result screen -- fetch it in the background
-        // instead of making the phase transition wait on it too.
         refreshHistory(entry.player.username);
         loadPuzzleAndMaybeResult(entry.puzzle);
       }
@@ -115,19 +152,12 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      // One combined request instead of createPlayer() + fetchTodayPuzzle()
-      // as two sequential round trips -- this is what was making "Start
-      // reading" feel slow even after the loading state itself got lighter.
       const { player: p, puzzle } = await onboardPlayer({ username, gender });
-      // Defensive: a malformed/empty response should surface as a normal
-      // error message, never as a raw "Cannot read properties of null" crash.
       if (!p || !p.username || !puzzle) {
         throw new Error("Couldn't create your profile — try again.");
       }
       setPlayer(p);
       setStoredUsername(p.username);
-      // Same as above: don't hold up the phase change waiting on the
-      // (non-critical) streak history to load.
       refreshHistory(p.username);
       loadPuzzleAndMaybeResult(puzzle);
       setReady(true);
@@ -151,6 +181,7 @@ export default function App() {
         explanation: r.explanation,
       });
       setPhase("result");
+      pushHistory({ entered: true, phase: "result" });
       refreshHistory(r.username);
     } catch (e) {
       if (e.status === 409 && e.data) {
@@ -162,6 +193,7 @@ export default function App() {
           explanation: e.data.resultToday?.explanation,
         });
         setPhase("result");
+        pushHistory({ entered: true, phase: "result" });
       } else {
         setError(e.message || "Couldn't submit your guess — try again.");
       }
@@ -171,30 +203,19 @@ export default function App() {
   }
 
   const handleExpire = useCallback(() => {
-    // lock in a forced (losing) submission once the 90s window server-side has passed
     handleGuess("red");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, player]);
 
-  // "Switch reader" — the home icon next to the streak badge. Instantly
-  // shows the username form again (no fetch, nothing to wait on, since the
-  // app is already open). Typing the same username returns that same
-  // player's result/streak; typing a different one starts (or resumes) a
-  // completely separate player — each has their own streak, stored
-  // server-side by username, not by device.
   function handleGoHome() {
     setCalendarOpen(false);
     setResult(null);
     setPuzzle(null);
     setHistory(null);
     setError("");
-    // Fully clear the previous reader, not just the visible phase. Leaving
-    // `player` set here was a real bug: the header kept showing "reading as
-    // <old name>" even on the fresh onboarding screen, and it meant every
-    // piece of state briefly pointed at two different people at once while
-    // a new profile was being created.
     setPlayer(null);
     setPhase("onboarding");
+    pushHistory({ entered: true, phase: "onboarding" });
   }
 
   const showControls = ready && phase !== "onboarding" && phase !== "error" && !!player;
@@ -207,6 +228,7 @@ export default function App() {
           <Hero
             onEnter={() => {
               setEntered(true);
+              pushHistory({ entered: true, phase: "onboarding" });
               resolveEntry();
             }}
             onExitComplete={() => setShowHero(false)}
@@ -228,18 +250,25 @@ export default function App() {
 
           <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 pb-6">
             <div className="relative w-full max-w-md">
-              {/* mode="popLayout" takes the exiting card out of normal layout
-                  flow (position: absolute) the moment it starts animating
-                  out, so the incoming card can immediately sit in its final
-                  centered position instead of both cards briefly coexisting
-                  in this flex column. That coexistence was the actual cause
-                  of the result/onboarding card first appearing low and then
-                  jumping up: for a moment there were two stacked children
-                  pushing each other off-center. mode="wait" avoided that by
-                  never rendering two at once, but paid for it with a visible
-                  stall before the new card appeared -- popLayout gets both:
-                  instant, correctly-centered entry and a clean, non-janky exit. */}
               <AnimatePresence mode="popLayout">
+                {/* Previously: nothing rendered here at all while `ready`
+                    was false, which is exactly the blank screen with just
+                    the header logo showing up in bug reports. This closes
+                    that gap with an actual loading state instead of an
+                    unstyled void. It won't make the underlying network
+                    request faster (that's a backend/Supabase latency
+                    question) but the UI never goes blank again. */}
+                {!ready && (
+                  <motion.div
+                    key="loading"
+                    {...phaseMotion}
+                    className="flex flex-col items-center justify-center gap-3 py-16"
+                  >
+                    <div className="h-9 w-9 animate-spin rounded-full border-[3px] border-blush-200 border-t-blush-600" />
+                    <p className="text-sm text-blush-500">getting today's conversation ready…</p>
+                  </motion.div>
+                )}
+
                 {ready && phase === "onboarding" && (
                   <motion.div key="onboarding" {...phaseMotion}>
                     <Onboarding onSubmit={handleOnboard} submitting={busy} error={error} />

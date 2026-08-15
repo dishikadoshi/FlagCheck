@@ -43,8 +43,8 @@ export default function Onboarding({ onSubmit, submitting, error }) {
       </label>
       <div className="grid grid-cols-2 gap-3 mb-8">
         {[
-          { key: "male", label: "A guy", emoji: "🧑", hint: "you'll judge her side" },
-          { key: "female", label: "A girl", emoji: "👩", hint: "you'll judge his side" },
+          { key: "male", label: "A guy", emoji: "🧑" },
+          { key: "female", label: "A girl", emoji: "👩"},
         ].map((opt) => (
           <motion.button
             key={opt.key}
