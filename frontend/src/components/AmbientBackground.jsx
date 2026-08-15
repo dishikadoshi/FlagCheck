@@ -1,28 +1,36 @@
-// A few soft, slow-drifting blurred orbs instead of a screen full of floating
-// hearts. Restrained on purpose — this sits behind real content, it
-// shouldn't compete with it.
 import { motion } from "framer-motion";
+import { useMemo } from "react";
 
-const ORBS = [
-  { size: 340, top: "-8%", left: "-10%", color: "rgba(255,163,194,0.35)", dur: 22 },
-  { size: 260, top: "55%", left: "78%", color: "rgba(216,163,77,0.16)", dur: 26 },
-  { size: 200, top: "78%", left: "-6%", color: "rgba(248,71,126,0.14)", dur: 30 },
-];
+const GLYPHS = ["♥", "♡"];
 
-export default function AmbientBackground() {
+export default function FloatingHearts({ count = 14 }) {
+  const hearts = useMemo(
+    () =>
+      Array.from({ length: count }).map((_, i) => ({
+        id: i,
+        left: Math.random() * 100,
+        size: 14 + Math.random() * 26,
+        duration: 10 + Math.random() * 12,
+        delay: Math.random() * 10,
+        glyph: GLYPHS[i % 2],
+        opacity: 0.08 + Math.random() * 0.16,
+      })),
+    [count]
+  );
+
   return (
-    <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden" aria-hidden="true">
-      <div className="absolute inset-0 bg-cream" />
-      {ORBS.map((o, i) => (
-        <motion.div
-          key={i}
-          className="absolute rounded-full blur-3xl"
-          style={{ width: o.size, height: o.size, top: o.top, left: o.left, background: o.color }}
-          animate={{ x: [0, 24, -12, 0], y: [0, -18, 14, 0] }}
-          transition={{ duration: o.dur, repeat: Infinity, ease: "easeInOut" }}
-        />
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0" aria-hidden="true">
+      {hearts.map((h) => (
+        <motion.span
+          key={h.id}
+          className="absolute text-blush-500 select-none"
+          style={{ left: `${h.left}%`, fontSize: h.size, opacity: h.opacity, bottom: -60 }}
+          animate={{ y: ["0vh", "-115vh"], rotate: [0, h.id % 2 ? 25 : -25] }}
+          transition={{ duration: h.duration, delay: h.delay, repeat: Infinity, ease: "linear" }}
+        >
+          {h.glyph}
+        </motion.span>
       ))}
-      <div className="bg-dots absolute inset-0 opacity-[0.5]" />
     </div>
   );
 }

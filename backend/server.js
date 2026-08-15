@@ -146,40 +146,105 @@ function resultPayload(puzzle, attempt) {
 // with that username (case-insensitively) already exists, their existing
 // row is returned as-is -- this is the "same username = same person, same
 // streak" rule; a different username is always a different player.
+
+// True only when the 23505 came from the username_key unique index
+// specifically (a genuine "someone else grabbed this exact name" race).
+// Supabase/Postgres error objects name the offending constraint/column in
+// `details` (e.g. "Key (username_key)=(veer) already exists.") and often in
+// `message` too, so this is a reliable way to tell that case apart from any
+// other unique-constraint conflict.
+function isUsernameKeyConflict(error) {
+  const text = `${error.message || ""} ${error.details || ""}`.toLowerCase();
+  return text.includes("username_key");
+}
+
+// Get-or-create. Two things this guards against:
+//
+// 1. A genuine race: two requests try to create the same (case-insensitive)
+//    username at once. Whoever loses gets a 23505 on username_key -- we just
+//    fetch the row the winner created.
+//
+// 2. A *device_id* conflict, not a username one. This app is meant to let
+//    several people share one browser/device, each under their own
+//    username (see schema.sql) -- but if a database is still running the
+//    schema from before migration_002_username_identity.sql was applied,
+//    `device_id` may still carry a leftover UNIQUE constraint (and, as it
+//    turns out, NOT NULL too) from the old device-based identity model.
+//    Since every player created from the same browser sends the same
+//    `deviceId` (see api.js getDeviceId), that old UNIQUE constraint makes
+//    *every* second player on that device fail to insert, every time -- not
+//    a rare race. Retrying with `device_id: null` isn't safe either if the
+//    column is also NOT NULL. So on a non-username 23505 we retry with a
+//    synthetic value instead: `${deviceId}::${username}` -- unique per
+//    (device, username) pair, so it satisfies both a legacy UNIQUE and a
+//    legacy NOT NULL at once, without ever colliding with another player's
+//    row. It's only a breadcrumb field, never used for identity, so this
+//    placeholder has no effect on gameplay.
+//    Run migration_002_username_identity.sql on the database to remove the
+//    old constraints properly and avoid relying on this fallback.
+async function getOrCreatePlayer({ username, gender, deviceId }) {
+  const stored = username.slice(0, 24);
+
+  let player = await getPlayerByUsername(stored);
+  if (player) {
+    if (deviceId) {
+      // best-effort breadcrumb of last device used, not used for identity —
+      // never let a failure here (e.g. that same legacy constraint) block
+      // returning the player.
+      await supabase
+        .from("players")
+        .update({ device_id: deviceId })
+        .eq("id", player.id)
+        .then(null, () => {});
+    }
+    return player;
+  }
+
+  if (!gender || !["male", "female"].includes(gender)) {
+    const err = new Error("gender ('male' | 'female') is required for a new player");
+    err.status = 400;
+    throw err;
+  }
+
+  const insertRow = { username: stored, gender, device_id: deviceId || null };
+  let { data, error } = await supabase.from("players").insert(insertRow).select().single();
+
+  if (error && error.code === "23505" && !isUsernameKeyConflict(error)) {
+    // Not a username collision -- almost certainly the legacy device_id
+    // constraint(s). Retry with a synthetic, always-non-null, per-username
+    // value instead of the raw shared deviceId.
+    const placeholderDeviceId = `${deviceId || "device"}::${stored.toLowerCase()}`;
+    ({ data, error } = await supabase
+      .from("players")
+      .insert({ ...insertRow, device_id: placeholderDeviceId })
+      .select()
+      .single());
+  }
+
+  if (!error) return data;
+
+  if (error.code === "23505") {
+    // Real username race (or the retry above still lost a username race)
+    // -- the winning row should already be committed.
+    player = await getPlayerByUsername(stored);
+    if (player) return player;
+  }
+
+  throw error.code ? error : new Error("player was not created or found");
+}
+
 app.post("/api/player", async (req, res) => {
   try {
     const { username, gender, deviceId } = req.body || {};
     const trimmed = String(username || "").trim();
     if (trimmed.length < 2) return res.status(400).json({ error: "username must be at least 2 characters" });
 
-    let player = await getPlayerByUsername(trimmed);
-    if (!player) {
-      if (!gender || !["male", "female"].includes(gender)) {
-        return res.status(400).json({ error: "gender ('male' | 'female') is required for a new player" });
-      }
-      const { data, error } = await supabase
-        .from("players")
-        .insert({ username: trimmed.slice(0, 24), gender, device_id: deviceId || null })
-        .select()
-        .single();
-      if (error) {
-        if (error.code === "23505") {
-          // lost a race to a duplicate create -- just fetch what won
-          player = await getPlayerByUsername(trimmed);
-        } else {
-          throw error;
-        }
-      } else {
-        player = data;
-      }
-    } else if (deviceId) {
-      // best-effort breadcrumb of last device used, not used for identity
-      await supabase.from("players").update({ device_id: deviceId }).eq("id", player.id);
-    }
+    const player = await getOrCreatePlayer({ username: trimmed, gender, deviceId });
+
     res.json(publicPlayer(player));
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "server error" });
+    res.status(e.status || 500).json({ error: e.message || "server error" });
   }
 });
 
@@ -190,7 +255,7 @@ app.get("/api/player/:username", async (req, res) => {
     res.json(publicPlayer(player));
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "server error" });
+    res.status(500).json({ error: e.message || "server error" });
   }
 });
 
@@ -241,7 +306,7 @@ app.get("/api/puzzle/today", async (req, res) => {
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "server error" });
+    res.status(500).json({ error: e.message || "server error" });
   }
 });
 
@@ -326,7 +391,7 @@ app.post("/api/guess", async (req, res) => {
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "server error" });
+    res.status(500).json({ error: e.message || "server error" });
   }
 });
 
@@ -362,7 +427,7 @@ app.get("/api/player/:username/history", async (req, res) => {
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "server error" });
+    res.status(500).json({ error: e.message || "server error" });
   }
 });
 

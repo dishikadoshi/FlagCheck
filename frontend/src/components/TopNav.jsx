@@ -1,7 +1,7 @@
 import StreakBadge from "./StreakBadge.jsx";
 import StreakCalendarPopover from "./StreakCalendarPopover.jsx";
 
-export default function TopNav({ player, showControls, onHome, calendarOpen, onToggleCalendar, onCloseCalendar }) {
+export default function TopNav({ player, showControls, onHome, calendarOpen, onToggleCalendar, onCloseCalendar, history }) {
   return (
     <header className="flex h-16 w-full shrink-0 items-center justify-between px-5 sm:px-8">
       <div className="flex min-w-0 items-center gap-2">
@@ -30,7 +30,7 @@ export default function TopNav({ player, showControls, onHome, calendarOpen, onT
             <StreakCalendarPopover
               open={calendarOpen}
               onClose={onCloseCalendar}
-              username={player.username}
+              history={history}
               currentStreak={player.streak}
               longestStreak={player.longestStreak}
             />

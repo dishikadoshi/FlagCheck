@@ -20,7 +20,7 @@ export default function ResultStamp({ result, askingAbout, puzzleTitle }) {
         initial={{ scale: 3, opacity: 0, rotate: isRed ? -25 : 20 }}
         animate={{ scale: 1, opacity: 1, rotate: isRed ? -8 : 6 }}
         transition={{ type: "spring", stiffness: 260, damping: 14, delay: 0.1 }}
-        className={`inline-flex flex-col items-center gap-1 rounded-2xl border-4 px-8 py-5 mb-5 ${
+        className={`inline-flex flex-col items-center gap-1 border-4 rounded-2xl px-8 py-5 mb-5 ${
           isRed ? "border-red-600 text-red-700" : "border-emerald-600 text-emerald-700"
         }`}
         style={{ transform: `rotate(${isRed ? -6 : 4}deg)` }}

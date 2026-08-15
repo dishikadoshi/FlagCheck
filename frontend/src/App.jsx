@@ -14,16 +14,25 @@ import {
   createPlayer,
   fetchTodayPuzzle,
   submitGuess,
+  fetchHistory,
 } from "./lib/api.js";
 
-// One shared, heavy-but-smooth transition for every top-level phase change
+// One shared, light transition for every top-level phase change
 // (onboarding -> playing -> result), so the app reads as one continuous
 // motion language rather than a grab-bag of effects.
-const PHASE_TRANSITION = { type: "spring", stiffness: 150, damping: 20, mass: 0.9 };
+//
+// Deliberately transform/opacity-only: an earlier version animated a CSS
+// `filter: blur()` here on top of a card that already has `backdrop-blur-xl`
+// applied to it. Animating blur is expensive to composite (it can't run on
+// the GPU compositor the way transform/opacity can) and, stacked on another
+// blur, was heavy enough to visibly stall the main thread for a beat on
+// every phase change -- exactly the "loads and pauses" glitch on both
+// Start Reading and tapping a flag, since both go through this transition.
+const PHASE_TRANSITION = { duration: 0.22, ease: "easeOut" };
 const phaseMotion = {
-  initial: { opacity: 0, y: 22, scale: 0.965, filter: "blur(6px)" },
-  animate: { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" },
-  exit: { opacity: 0, y: -12, scale: 0.98, filter: "blur(3px)", transition: { duration: 0.32, ease: "easeIn" } },
+  initial: { opacity: 0, y: 14, scale: 0.985 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: -8, scale: 0.99, transition: { duration: 0.15, ease: "easeIn" } },
   transition: PHASE_TRANSITION,
 };
 
@@ -38,6 +47,19 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [history, setHistory] = useState(null);
+
+  // Fetched proactively (never on-demand) so the streak calendar popover has
+  // no loading state to show — by the time anyone taps the streak badge, the
+  // data has already been sitting in memory for a while.
+  const refreshHistory = useCallback(async (username) => {
+    try {
+      const h = await fetchHistory(username, 35);
+      setHistory(h);
+    } catch {
+      // non-critical: leave whatever history is already in state
+    }
+  }, []);
 
   const loadPuzzleAndMaybeResult = useCallback(async (username) => {
     const p = await fetchTodayPuzzle(username);
@@ -74,7 +96,7 @@ export default function App() {
         setPhase("onboarding");
       } else {
         setPlayer(existing);
-        await loadPuzzleAndMaybeResult(existing.username);
+        await Promise.all([loadPuzzleAndMaybeResult(existing.username), refreshHistory(existing.username)]);
       }
       setReady(true);
     } catch (e) {
@@ -85,13 +107,19 @@ export default function App() {
   }
 
   async function handleOnboard({ username, gender }) {
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
       const p = await createPlayer({ username, gender });
+      // Defensive: a malformed/empty response should surface as a normal
+      // error message, never as a raw "Cannot read properties of null" crash.
+      if (!p || !p.username) {
+        throw new Error("Couldn't create your profile — try again.");
+      }
       setPlayer(p);
       setStoredUsername(p.username);
-      await loadPuzzleAndMaybeResult(p.username);
+      await Promise.all([loadPuzzleAndMaybeResult(p.username), refreshHistory(p.username)]);
       setReady(true);
     } catch (e) {
       setError(e.message || "Couldn't start your profile — try again.");
@@ -113,6 +141,7 @@ export default function App() {
         explanation: r.explanation,
       });
       setPhase("result");
+      refreshHistory(r.username);
     } catch (e) {
       if (e.status === 409 && e.data) {
         setPlayer(e.data);
@@ -147,7 +176,14 @@ export default function App() {
     setCalendarOpen(false);
     setResult(null);
     setPuzzle(null);
+    setHistory(null);
     setError("");
+    // Fully clear the previous reader, not just the visible phase. Leaving
+    // `player` set here was a real bug: the header kept showing "reading as
+    // <old name>" even on the fresh onboarding screen, and it meant every
+    // piece of state briefly pointed at two different people at once while
+    // a new profile was being created.
+    setPlayer(null);
     setPhase("onboarding");
   }
 
@@ -177,19 +213,19 @@ export default function App() {
             calendarOpen={calendarOpen}
             onToggleCalendar={() => setCalendarOpen((v) => !v)}
             onCloseCalendar={() => setCalendarOpen(false)}
+            history={history}
           />
 
           <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 pb-6">
             <div className="w-full max-w-md">
-              <AnimatePresence mode="wait">
+              {/* mode="sync" (the default) lets the incoming phase animate in
+                  immediately instead of waiting for the outgoing one to
+                  finish exiting first -- with mode="wait" that sequential
+                  hand-off was adding a visible stall on every phase change. */}
+              <AnimatePresence>
                 {ready && phase === "onboarding" && (
                   <motion.div key="onboarding" {...phaseMotion}>
-                    <Onboarding
-                      onSubmit={handleOnboard}
-                      submitting={busy}
-                      error={error}
-                      initial={player ? { username: player.username, gender: player.gender } : undefined}
-                    />
+                    <Onboarding onSubmit={handleOnboard} submitting={busy} error={error} />
                   </motion.div>
                 )}
 

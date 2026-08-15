@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { fetchHistory } from "../lib/api.js";
 
 const WEEKS = 5; // 5x7 = 35 days
 const DAY_MS = 86400000;
@@ -9,25 +8,10 @@ function toDateStr(d) {
   return d.toISOString().slice(0, 10);
 }
 
-export default function StreakCalendarPopover({ open, onClose, username, currentStreak, longestStreak }) {
-  const [history, setHistory] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    if (!open || !username) return;
-    let cancelled = false;
-    setLoading(true);
-    setErr("");
-    fetchHistory(username, WEEKS * 7)
-      .then((d) => !cancelled && setHistory(d))
-      .catch((e) => !cancelled && setErr(e.message || "Couldn't load streak history"))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [open, username]);
-
+// `history` is pre-fetched by App (in parallel with the day's puzzle, while
+// the door animation plays) and simply handed down here — this component
+// never fetches anything itself, so there's nothing to wait on when it opens.
+export default function StreakCalendarPopover({ open, onClose, history, currentStreak, longestStreak }) {
   const grid = useMemo(() => {
     const byDate = new Map((history?.days || []).map((d) => [d.date, d.correct]));
     const today = new Date();
@@ -37,7 +21,7 @@ export default function StreakCalendarPopover({ open, onClose, username, current
       const key = toDateStr(d);
       cells.push({
         key,
-        day: d.getUTCDate ? d.getDate() : d.getDate(),
+        day: d.getDate(),
         isToday: i === 0,
         state: byDate.has(key) ? (byDate.get(key) ? "correct" : "wrong") : "empty",
       });
@@ -60,39 +44,35 @@ export default function StreakCalendarPopover({ open, onClose, username, current
             aria-label="Streak calendar"
           >
             <div className="flex items-center justify-between">
-              <p className="font-display text-[15px] font-semibold text-ink-800">Your streak</p>
+              <p className="font-display text-[15px] font-semibold text-blush-800">Your streak</p>
               <div className="flex items-center gap-1 text-[13px] font-semibold text-blush-500">
                 <span>🔥</span>
                 {currentStreak}
               </div>
             </div>
-            <p className="mt-0.5 text-[11px] text-ink-400">best: {longestStreak} day{longestStreak === 1 ? "" : "s"}</p>
+            <p className="mt-0.5 text-[11px] text-blush-400">
+              best: {longestStreak} day{longestStreak === 1 ? "" : "s"}
+            </p>
 
-            <div className="mt-4">
-              {loading && <p className="py-6 text-center text-xs text-ink-400">loading…</p>}
-              {err && <p className="py-6 text-center text-xs text-red-500">{err}</p>}
-              {!loading && !err && (
-                <div className="grid grid-cols-7 gap-1.5">
-                  {grid.map((c) => (
-                    <div
-                      key={c.key}
-                      title={c.key}
-                      className={`flex aspect-square items-center justify-center rounded-lg text-[10px] font-semibold tabular-nums ring-1 ring-inset ${
-                        c.state === "correct"
-                          ? "bg-emerald-500 text-white ring-emerald-500"
-                          : c.state === "wrong"
-                          ? "bg-blush-200 text-blush-700 ring-blush-200"
-                          : "bg-blush-50 text-ink-300 ring-blush-100"
-                      } ${c.isToday ? "ring-2 ring-offset-1 ring-offset-white ring-ink-800" : ""}`}
-                    >
-                      {c.day}
-                    </div>
-                  ))}
+            <div className="mt-4 grid grid-cols-7 gap-1.5">
+              {grid.map((c) => (
+                <div
+                  key={c.key}
+                  title={c.key}
+                  className={`flex aspect-square items-center justify-center rounded-lg text-[10px] font-semibold tabular-nums ring-1 ring-inset ${
+                    c.state === "correct"
+                      ? "bg-emerald-500 text-white ring-emerald-500"
+                      : c.state === "wrong"
+                      ? "bg-blush-200 text-blush-700 ring-blush-200"
+                      : "bg-blush-50 text-blush-300 ring-blush-100"
+                  } ${c.isToday ? "ring-2 ring-offset-1 ring-offset-white ring-blush-800" : ""}`}
+                >
+                  {c.day}
                 </div>
-              )}
+              ))}
             </div>
 
-            <div className="mt-4 flex items-center gap-3.5 border-t border-blush-100 pt-3.5 text-[10.5px] text-ink-400">
+            <div className="mt-4 flex items-center gap-3.5 border-t border-blush-100 pt-3.5 text-[10.5px] text-blush-400">
               <span className="flex items-center gap-1.5">
                 <span className="h-2.5 w-2.5 rounded-[3px] bg-emerald-500" /> read right
               </span>

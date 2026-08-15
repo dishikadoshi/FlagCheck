@@ -1,76 +1,102 @@
-import { useState } from "react";
 import { motion } from "framer-motion";
+import { useState } from "react";
 
-export default function Onboarding({ onSubmit, submitting, error, initial }) {
-  const [username, setUsername] = useState(initial?.username || "");
-  const [gender, setGender] = useState(initial?.gender || "");
+export default function Onboarding({ onSubmit, submitting, error }) {
+  const [username, setUsername] = useState("");
+  const [gender, setGender] = useState(null);
 
-  function handleSubmit(e) {
-    e.preventDefault();
-    const trimmed = username.trim();
-    if (trimmed.length < 2 || !gender || submitting) return;
-    onSubmit({ username: trimmed, gender });
-  }
-
-  const valid = username.trim().length >= 2 && !!gender;
+  const canSubmit = username.trim().length >= 2 && gender && !submitting;
 
   return (
-    <motion.form
-      onSubmit={handleSubmit}
-      className="rounded-[28px] border border-blush-200 bg-white/85 backdrop-blur-xl p-6 shadow-soft sm:p-8"
+    <motion.div
+      initial={{ opacity: 0, y: 30, scale: 0.94 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: "spring", stiffness: 140, damping: 16 }}
+      className="w-full max-w-md mx-auto bg-white/80 backdrop-blur-xl border border-blush-200 rounded-[28px] shadow-soft p-7 sm:p-9"
     >
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-blush-400">Before we start</p>
-      <h2 className="font-display mt-1 text-2xl font-bold text-blush-900">Who's reading today?</h2>
-      <p className="mt-2 text-[13.5px] leading-relaxed text-blush-600/90">
-        Just enough to save your streak on this device. Every player gets the exact same puzzles and the exact
-        same answers — this is only for your profile.
+      <motion.div
+        initial={{ scale: 0 }}
+        animate={{ scale: 1, rotate: [0, -8, 8, -4, 0] }}
+        transition={{ delay: 0.15, duration: 0.7, ease: "easeOut" }}
+        className="text-5xl text-center mb-3"
+      >
+        💌
+      </motion.div>
+      <h2 className="font-display text-2xl text-center text-blush-800 mb-1">Before we start</h2>
+      <p className="text-center text-blush-600/80 text-sm mb-6">
+        Two quick things so we can hand you the right side of the conversation.
       </p>
 
-      <label className="mt-6 block">
-        <span className="text-xs font-semibold uppercase tracking-wide text-blush-500">Display name</span>
-        <input
-          autoFocus
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          maxLength={24}
-          placeholder="e.g. doodles"
-          className="mt-2 w-full rounded-2xl border border-blush-200 bg-cream px-4 py-3 text-[15px] text-blush-900 outline-none transition focus:border-blush-400 focus:ring-4 focus:ring-blush-100"
-        />
+      <label className="block text-xs font-semibold tracking-wide uppercase text-blush-700 mb-2">
+        Pick a name
       </label>
+      <input
+        value={username}
+        maxLength={24}
+        onChange={(e) => setUsername(e.target.value)}
+        placeholder="e.g. rosequartz"
+        className="w-full rounded-2xl border-2 border-blush-200 focus:border-blush-500 bg-blush-50/60 px-4 py-3 text-blush-900 placeholder:text-blush-300 outline-none transition-colors mb-6"
+      />
 
-      <fieldset className="mt-5">
-        <legend className="text-xs font-semibold uppercase tracking-wide text-blush-500">You are</legend>
-        <div className="mt-2 grid grid-cols-2 gap-2.5">
-          {[
-            { v: "female", label: "Woman" },
-            { v: "male", label: "Man" },
-          ].map((opt) => (
-            <button
-              type="button"
-              key={opt.v}
-              onClick={() => setGender(opt.v)}
-              className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                gender === opt.v
-                  ? "border-blush-500 bg-blush-500 text-white shadow-soft"
-                  : "border-blush-200 bg-cream text-blush-700 hover:border-blush-300"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
+      <label className="block text-xs font-semibold tracking-wide uppercase text-blush-700 mb-2">
+        You're reading as
+      </label>
+      <div className="grid grid-cols-2 gap-3 mb-8">
+        {[
+          { key: "male", label: "A guy", emoji: "🧑", hint: "you'll judge her side" },
+          { key: "female", label: "A girl", emoji: "👩", hint: "you'll judge his side" },
+        ].map((opt) => (
+          <motion.button
+            key={opt.key}
+            type="button"
+            onClick={() => setGender(opt.key)}
+            whileTap={{ scale: 0.94 }}
+            whileHover={{ y: -2 }}
+            className={`relative rounded-2xl border-2 px-3 py-4 text-center transition-colors ${
+              gender === opt.key
+                ? "border-blush-600 bg-blush-100 shadow-soft"
+                : "border-blush-200 bg-white/70"
+            }`}
+          >
+            <div className="text-2xl mb-1">{opt.emoji}</div>
+            <div className="font-semibold text-blush-800 text-sm">{opt.label}</div>
+            <div className="text-[11px] text-blush-500 mt-0.5">{opt.hint}</div>
+            {gender === opt.key && (
+              <motion.div
+                layoutId="genderTick"
+                className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-blush-600 text-white text-xs flex items-center justify-center shadow-soft"
+              >
+                ✓
+              </motion.div>
+            )}
+          </motion.button>
+        ))}
+      </div>
 
-      {error && <p className="mt-4 text-sm font-medium text-red-600">{error}</p>}
+      {error && (
+        <motion.p
+          initial={{ opacity: 0, x: -6 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="text-red-600 text-sm text-center mb-4"
+        >
+          {error}
+        </motion.p>
+      )}
 
       <motion.button
-        type="submit"
-        disabled={!valid || submitting}
-        whileTap={valid ? { scale: 0.98 } : {}}
-        className="mt-7 flex w-full items-center justify-center gap-2 rounded-2xl bg-blush-500 py-3.5 font-display text-[16px] font-semibold text-white shadow-soft transition disabled:cursor-not-allowed disabled:opacity-40"
+        type="button"
+        disabled={!canSubmit}
+        onClick={() => onSubmit({ username: username.trim(), gender })}
+        whileTap={canSubmit ? { scale: 0.96 } : {}}
+        whileHover={canSubmit ? { scale: 1.02 } : {}}
+        className={`w-full rounded-2xl py-3.5 font-display font-semibold text-lg tracking-wide transition-all ${
+          canSubmit
+            ? "bg-gradient-to-r from-blush-500 to-blush-700 text-white shadow-soft"
+            : "bg-blush-100 text-blush-300 cursor-not-allowed"
+        }`}
       >
         {submitting ? "Setting up…" : "Start reading"}
       </motion.button>
-    </motion.form>
+    </motion.div>
   );
 }
