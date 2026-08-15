@@ -139,6 +139,50 @@ function resultPayload(puzzle, attempt) {
   };
 }
 
+// Shared by /api/puzzle/today, /api/onboard, and /api/enter -- builds
+// today's puzzle payload for a given (already-resolved) player row, or a
+// player-less generic payload if `player` is null. Pulled out into one
+// function so the onboard/enter endpoints can return player + puzzle in a
+// single response instead of the frontend needing two round trips for it.
+async function buildTodayPuzzlePayload(player) {
+  const today = todayStr();
+  const puzzle = await getOrAssignDailyPuzzle(today);
+
+  let startedAt = null;
+  let alreadyPlayed = false;
+  let resultToday = null;
+
+  if (player) {
+    const attempt = await getAttempt(player.id, puzzle.id);
+    alreadyPlayed = !!attempt;
+
+    if (attempt) {
+      resultToday = resultPayload(puzzle, attempt);
+      startedAt = new Date(attempt.played_at).getTime();
+    } else {
+      const puzzleState = player.puzzle_state || {};
+      if (!puzzleState[today]) {
+        puzzleState[today] = { startedAt: Date.now() };
+        const { error } = await supabase
+          .from("players")
+          .update({ puzzle_state: puzzleState })
+          .eq("id", player.id);
+        if (error) throw error;
+      }
+      startedAt = puzzleState[today].startedAt;
+    }
+  }
+
+  return {
+    date: today,
+    ...toClientPuzzle(puzzle),
+    timeLimitMs: TIME_LIMIT_MS,
+    startedAt,
+    alreadyPlayed,
+    resultToday,
+  };
+}
+
 // ---- routes ----
 
 // Create or fetch a player by username. If no player exists for that
@@ -248,6 +292,44 @@ app.post("/api/player", async (req, res) => {
   }
 });
 
+// Combined create-or-get-player + today's-puzzle in one round trip -- what
+// the "Start reading" button calls. Doing this as two separate requests
+// (POST /api/player then GET /api/puzzle/today) meant the button sat there
+// for two sequential network round trips before the app could move on;
+// this cuts it to one.
+app.post("/api/onboard", async (req, res) => {
+  try {
+    const { username, gender, deviceId } = req.body || {};
+    const trimmed = String(username || "").trim();
+    if (trimmed.length < 2) return res.status(400).json({ error: "username must be at least 2 characters" });
+
+    const player = await getOrCreatePlayer({ username: trimmed, gender, deviceId });
+    const puzzle = await buildTodayPuzzlePayload(player);
+
+    res.json({ player: publicPlayer(player), puzzle });
+  } catch (e) {
+    console.error(e);
+    res.status(e.status || 500).json({ error: e.message || "server error" });
+  }
+});
+
+// Combined fetch-existing-player + today's-puzzle in one round trip -- used
+// when re-entering as a previously-created reader (see resolveEntry in the
+// frontend), for the same reason as /api/onboard above.
+app.get("/api/enter", async (req, res) => {
+  try {
+    const { username } = req.query;
+    if (!username) return res.status(400).json({ error: "username is required" });
+    const player = await getPlayerByUsername(username);
+    if (!player) return res.status(404).json({ error: "player not found" });
+    const puzzle = await buildTodayPuzzlePayload(player);
+    res.json({ player: publicPlayer(player), puzzle });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || "server error" });
+  }
+});
+
 app.get("/api/player/:username", async (req, res) => {
   try {
     const player = await getPlayerByUsername(req.params.username);
@@ -268,42 +350,7 @@ app.get("/api/puzzle/today", async (req, res) => {
     const player = username ? await getPlayerByUsername(username) : null;
     if (username && !player) return res.status(404).json({ error: "player not found" });
 
-    const today = todayStr();
-    const puzzle = await getOrAssignDailyPuzzle(today);
-
-    let startedAt = null;
-    let alreadyPlayed = false;
-    let resultToday = null;
-
-    if (player) {
-      const attempt = await getAttempt(player.id, puzzle.id);
-      alreadyPlayed = !!attempt;
-
-      if (attempt) {
-        resultToday = resultPayload(puzzle, attempt);
-        startedAt = new Date(attempt.played_at).getTime();
-      } else {
-        const puzzleState = player.puzzle_state || {};
-        if (!puzzleState[today]) {
-          puzzleState[today] = { startedAt: Date.now() };
-          const { error } = await supabase
-            .from("players")
-            .update({ puzzle_state: puzzleState })
-            .eq("id", player.id);
-          if (error) throw error;
-        }
-        startedAt = puzzleState[today].startedAt;
-      }
-    }
-
-    res.json({
-      date: today,
-      ...toClientPuzzle(puzzle),
-      timeLimitMs: TIME_LIMIT_MS,
-      startedAt,
-      alreadyPlayed,
-      resultToday,
-    });
+    res.json(await buildTodayPuzzlePayload(player));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || "server error" });

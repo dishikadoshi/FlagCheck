@@ -10,9 +10,8 @@ import TimerRing from "./components/TimerRing.jsx";
 import {
   getStoredUsername,
   setStoredUsername,
-  fetchPlayer,
-  createPlayer,
-  fetchTodayPuzzle,
+  onboardPlayer,
+  enterAsPlayer,
   submitGuess,
   fetchHistory,
 } from "./lib/api.js";
@@ -61,8 +60,7 @@ export default function App() {
     }
   }, []);
 
-  const loadPuzzleAndMaybeResult = useCallback(async (username) => {
-    const p = await fetchTodayPuzzle(username);
+  const loadPuzzleAndMaybeResult = useCallback((p) => {
     setPuzzle(p);
     if (p.alreadyPlayed) {
       setResult({
@@ -91,12 +89,18 @@ export default function App() {
         setReady(true);
         return;
       }
-      const existing = await fetchPlayer(stored).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
-      if (!existing) {
+      // One combined request instead of fetchPlayer() + fetchTodayPuzzle()
+      // as two sequential round trips.
+      const entry = await enterAsPlayer(stored).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+      if (!entry) {
         setPhase("onboarding");
       } else {
-        setPlayer(existing);
-        await Promise.all([loadPuzzleAndMaybeResult(existing.username), refreshHistory(existing.username)]);
+        setPlayer(entry.player);
+        // History is only for the streak-calendar popover, not needed to
+        // show the puzzle/result screen -- fetch it in the background
+        // instead of making the phase transition wait on it too.
+        refreshHistory(entry.player.username);
+        loadPuzzleAndMaybeResult(entry.puzzle);
       }
       setReady(true);
     } catch (e) {
@@ -111,15 +115,21 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      const p = await createPlayer({ username, gender });
+      // One combined request instead of createPlayer() + fetchTodayPuzzle()
+      // as two sequential round trips -- this is what was making "Start
+      // reading" feel slow even after the loading state itself got lighter.
+      const { player: p, puzzle } = await onboardPlayer({ username, gender });
       // Defensive: a malformed/empty response should surface as a normal
       // error message, never as a raw "Cannot read properties of null" crash.
-      if (!p || !p.username) {
+      if (!p || !p.username || !puzzle) {
         throw new Error("Couldn't create your profile — try again.");
       }
       setPlayer(p);
       setStoredUsername(p.username);
-      await Promise.all([loadPuzzleAndMaybeResult(p.username), refreshHistory(p.username)]);
+      // Same as above: don't hold up the phase change waiting on the
+      // (non-critical) streak history to load.
+      refreshHistory(p.username);
+      loadPuzzleAndMaybeResult(puzzle);
       setReady(true);
     } catch (e) {
       setError(e.message || "Couldn't start your profile — try again.");
@@ -217,12 +227,19 @@ export default function App() {
           />
 
           <main className="flex flex-1 items-center justify-center overflow-y-auto px-4 pb-6">
-            <div className="w-full max-w-md">
-              {/* mode="sync" (the default) lets the incoming phase animate in
-                  immediately instead of waiting for the outgoing one to
-                  finish exiting first -- with mode="wait" that sequential
-                  hand-off was adding a visible stall on every phase change. */}
-              <AnimatePresence>
+            <div className="relative w-full max-w-md">
+              {/* mode="popLayout" takes the exiting card out of normal layout
+                  flow (position: absolute) the moment it starts animating
+                  out, so the incoming card can immediately sit in its final
+                  centered position instead of both cards briefly coexisting
+                  in this flex column. That coexistence was the actual cause
+                  of the result/onboarding card first appearing low and then
+                  jumping up: for a moment there were two stacked children
+                  pushing each other off-center. mode="wait" avoided that by
+                  never rendering two at once, but paid for it with a visible
+                  stall before the new card appeared -- popLayout gets both:
+                  instant, correctly-centered entry and a clean, non-janky exit. */}
+              <AnimatePresence mode="popLayout">
                 {ready && phase === "onboarding" && (
                   <motion.div key="onboarding" {...phaseMotion}>
                     <Onboarding onSubmit={handleOnboard} submitting={busy} error={error} />

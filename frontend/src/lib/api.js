@@ -50,6 +50,23 @@ export function createPlayer({ username, gender }) {
   });
 }
 
+// Create-or-get the player AND fetch today's puzzle in one request, instead
+// of createPlayer() + fetchTodayPuzzle() as two sequential round trips.
+// Returns { player, puzzle }. This is what "Start reading" calls.
+export function onboardPlayer({ username, gender }) {
+  return request(`/api/onboard`, {
+    method: "POST",
+    body: JSON.stringify({ username, gender, deviceId: getDeviceId() }),
+  });
+}
+
+// Fetch an existing player AND today's puzzle in one request, instead of
+// fetchPlayer() + fetchTodayPuzzle() as two sequential round trips. Returns
+// { player, puzzle }. Used when re-entering as a previously-created reader.
+export function enterAsPlayer(username) {
+  return request(`/api/enter?username=${encodeURIComponent(username)}`);
+}
+
 export function fetchTodayPuzzle(username) {
   return request(`/api/puzzle/today?username=${encodeURIComponent(username)}`);
 }
